@@ -22,6 +22,9 @@ import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import html2pdf from 'html2pdf.js';
 
+// *** HIER dein Logo einbinden ***
+import KoglerLogo from './assets/kogler_time_icon.png';
+
 // --- KONFIGURATION & DATEN ---
 
 const WORK_CODES = [
@@ -253,16 +256,15 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
         return;
       }
 
-      // Native (Android / iOS)
+      // Native (Android / iOS): PDF als Blob → Base64 → in Documents
       const pdfBlob = await worker.output('blob');
       const base64 = await blobToBase64(pdfBlob);
 
       const result = await Filesystem.writeFile({
-        path: `reports/${filename}`,
+        path: filename,                // direkt im Documents-Ordner
         data: base64,
         directory: Directory.Documents,
-        encoding: Encoding.BASE64,
-        recursive: true,          // Ordner automatisch anlegen
+        encoding: Encoding.BASE64
       });
 
       alert('PDF gespeichert:\n' + result.uri);
@@ -635,11 +637,10 @@ export default function App() {
       }
 
       const result = await Filesystem.writeFile({
-        path: `exports/${fileName}`,
+        path: fileName,           // direkt im Documents-Ordner
         data: json,
         directory: Directory.Documents,
-        encoding: Encoding.UTF8,
-        recursive: true,       // Ordner automatisch anlegen
+        encoding: Encoding.UTF8
       });
 
       alert('Export gespeichert:\n' + result.uri);
@@ -727,8 +728,12 @@ export default function App() {
                 <ArrowLeft/>
               </button>
             ) : (
-              <div className="bg-orange-500 p-2 rounded-lg">
-                <Clock size={20} className="text-white" />
+              <div className="w-9 h-9 rounded-lg overflow-hidden flex items-center justify-center bg-slate-900">
+                <img
+                  src={KoglerLogo}
+                  alt="Kogler Zeit"
+                  className="w-full h-full object-contain"
+                />
               </div>
             )}
             <div>
@@ -1139,7 +1144,7 @@ export default function App() {
           </Card>
           
           <p className="text-center text-xs text-slate-300">
-            App Version 1.6 (PDF & Export/Import)
+            App Version 1.7 (Logo, PDF & Export-Fix)
           </p>
         </main>
       )}
