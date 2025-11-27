@@ -260,7 +260,7 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
       const periodStr = `${fDate(start)}_bis_${fDay(end)}`;
       const filename = `${safeName}_Stundenzettel_${periodStr}.pdf`;
 
-      // html2pdf-Optionen (kein TypeScript, kein ": any")
+      // html2pdf-Optionen
       const opt = {
         margin: 0,
         filename,
@@ -284,8 +284,8 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
       const pdfBlob = await worker.output('blob');
       const base64 = await blobToBase64(pdfBlob);
 
-      // 2. In den öffentlichen Dokumente-Ordner schreiben
-      const directory = Directory.Documents;
+      // 2. In den App-internen Daten-Ordner schreiben
+      const directory = Directory.Data;
 
       const writeResult = await Filesystem.writeFile({
         path: filename,
@@ -296,7 +296,7 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
 
       console.log('PDF gespeichert, writeResult:', writeResult);
 
-      // 3. Share-URI holen (wichtig: gleiches Directory wie oben!)
+      // 3. Share-URI holen
       let shareUrl;
 
       try {
@@ -307,7 +307,6 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
 
         console.log('Filesystem.getUri result:', uriResult);
 
-        // Verschiedene Plattformen liefern evtl. uri oder path
         shareUrl = uriResult.uri || uriResult.path || writeResult.uri || writeResult.path;
       } catch (uriErr) {
         console.warn('Fehler bei Filesystem.getUri:', uriErr);
@@ -325,16 +324,16 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
         } catch (shareErr) {
           console.warn('Share-Fehler (PDF):', shareErr);
           alert(
-            'PDF wurde in den Dokumenten gespeichert, aber Teilen ist fehlgeschlagen.\n\n' +
-              `Dateiname: ${filename}`
+            'PDF wurde gespeichert, aber Teilen ist fehlgeschlagen.\n\n' +
+            `Dateiname: ${filename}`
           );
         }
       } else {
         alert(
-          'PDF wurde in den Dokumenten gespeichert,\n' +
-            'aber es konnte keine Share-URL ermittelt werden.\n\n' +
-            `Dateiname: ${filename}\n` +
-            'Du findest die Datei im Ordner "Dokumente".'
+          'PDF wurde gespeichert,\n' +
+          'aber es konnte keine Share-URL ermittelt werden.\n\n' +
+          `Dateiname: ${filename}\n` +
+          'Bitte die Datei über die Export-Funktion erneut teilen.'
         );
       }
     } catch (err) {
@@ -345,7 +344,6 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
       setIsGenerating(false);
     }
   };
-
 
   return (
     <div
@@ -745,74 +743,72 @@ export default function App() {
 
   // --- Export / Import ---
 
-	const exportData = async () => {
-	  try {
-		const payload = {
-		  user: userData,
-		  entries,
-		  exportedAt: new Date().toISOString()
-		};
+  const exportData = async () => {
+    try {
+      const payload = {
+        user: userData,
+        entries,
+        exportedAt: new Date().toISOString()
+      };
 
-		const json = JSON.stringify(payload, null, 2);
-		const fileName = `kogler_zeiterfassung_${new Date().toISOString().slice(0, 10)}.json`;
+      const json = JSON.stringify(payload, null, 2);
+      const fileName = `kogler_zeiterfassung_${new Date().toISOString().slice(0, 10)}.json`;
 
-		// Web-Fallback
-		if (!Capacitor.isNativePlatform()) {
-		  const blob = new Blob([json], { type: 'application/json' });
-		  const url = URL.createObjectURL(blob);
-		  const a = document.createElement('a');
-		  a.href = url;
-		  a.download = fileName;
-		  document.body.appendChild(a);
-		  a.click();
-		  document.body.removeChild(a);
-		  URL.revokeObjectURL(url);
-		  alert('Export als Browser-Download erstellt.');
-		  return;
-		}
+      // Web-Fallback
+      if (!Capacitor.isNativePlatform()) {
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        alert('Export als Browser-Download erstellt.');
+        return;
+      }
 
-		// Native: in App-Daten schreiben
-		const writeResult = await Filesystem.writeFile({
-		  path: fileName,
-		  data: json,
-		  directory: Directory.Data,
-		  encoding: Encoding.UTF8
-		});
+      // Native: in App-Daten schreiben
+      const writeResult = await Filesystem.writeFile({
+        path: fileName,
+        data: json,
+        directory: Directory.Data,
+        encoding: Encoding.UTF8
+      });
 
-		let shareUrl = writeResult.uri;
+      let shareUrl = writeResult.uri;
 
-		try {
-		  const uriResult = await Filesystem.getUri({
-			path: fileName,
-			directory: Directory.Data
-		  });
-		  if (uriResult && uriResult.uri) {
-			shareUrl = uriResult.uri;
-		  }
-		} catch (uriErr) {
-		  console.warn('Filesystem.getUri (Export) Fehler, verwende file-URI:', uriErr);
-		}
+      try {
+        const uriResult = await Filesystem.getUri({
+          path: fileName,
+          directory: Directory.Data
+        });
+        if (uriResult && uriResult.uri) {
+          shareUrl = uriResult.uri;
+        }
+      } catch (uriErr) {
+        console.warn('Filesystem.getUri (Export) Fehler, verwende file-URI:', uriErr);
+      }
 
-		try {
-		  await Share.share({
-			title: 'Zeiterfassung exportieren',
-			text: 'Exportierte Zeiterfassungsdaten',
-			url: shareUrl
-		  });
-		} catch (shareErr) {
-		  console.warn('Share-Fehler (Export):', shareErr);
-		  // Auch hier kein alert, nur Log
-		}
+      try {
+        await Share.share({
+          title: 'Zeiterfassung exportieren',
+          text: 'Exportierte Zeiterfassungsdaten',
+          url: shareUrl
+        });
+      } catch (shareErr) {
+        console.warn('Share-Fehler (Export):', shareErr);
+      }
 
-		alert('Export gespeichert:\n' + writeResult.uri);
-	  } catch (err) {
-		console.error('Export-Fehler', err);
-		const msg =
-		  typeof err === 'object' ? (err?.message || JSON.stringify(err)) : String(err);
-		alert('Fehler beim Export:\n' + msg);
-	  }
-	};
-
+      alert('Export gespeichert:\n' + writeResult.uri);
+    } catch (err) {
+      console.error('Export-Fehler', err);
+      const msg =
+        typeof err === 'object' ? (err?.message || JSON.stringify(err)) : String(err);
+      alert('Fehler beim Export:\n' + msg);
+    }
+  };
 
   const handleImportFile = (event) => {
     const file = event.target.files?.[0];
@@ -1414,7 +1410,7 @@ export default function App() {
           </Card>
 
           <p className="text-center text-xs text-slate-300">
-            App Version 1.8.3 (PDF-Share-Fix)
+            App Version 1.8.4 (PDF in App-Daten & Share)
           </p>
         </main>
       )}
