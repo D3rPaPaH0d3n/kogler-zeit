@@ -9,6 +9,7 @@ import {
   Download,
   Thermometer,
   Sun,
+  Moon,
   X,
   FileBarChart,
   Loader,
@@ -20,9 +21,10 @@ import {
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
 import html2pdf from 'html2pdf.js';
 
-// *** HIER dein Logo einbinden ***
+// *** Logo ***
 import KoglerLogo from './assets/kogler_time_icon.png';
 
 // --- KONFIGURATION & DATEN ---
@@ -182,10 +184,24 @@ const Card = ({ children, className = "" }) => (
 const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
   const [filterMode, setFilterMode] = useState('month');
   const [isGenerating, setIsGenerating] = useState(false);
-  
+
+  // sortiert nach Datum (alt → neu) + Startzeit
   const filteredEntries = useMemo(() => {
-    if (filterMode === 'month') return entries;
-    return entries.filter(e => getWeekNumber(new Date(e.date)) === Number(filterMode));
+    let list =
+      filterMode === 'month'
+        ? [...entries]
+        : entries.filter(e => getWeekNumber(new Date(e.date)) === Number(filterMode));
+
+    list.sort((a, b) => {
+      const da = new Date(a.date);
+      const db = new Date(b.date);
+      if (da.getTime() !== db.getTime()) return da - db;
+      const sa = a.start || '';
+      const sb = b.start || '';
+      return sa.localeCompare(sb);
+    });
+
+    return list;
   }, [entries, filterMode]);
 
   const availableWeeks = useMemo(() => {
@@ -197,7 +213,7 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
     let work = 0;
     let vacation = 0;
     let sick = 0;
-    
+
     filteredEntries.forEach(e => {
       if (e.type === 'work') work += e.netDuration;
       if (e.type === 'vacation') vacation += e.netDuration;
@@ -211,8 +227,13 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
     try {
       setIsGenerating(true);
       const element = document.getElementById('report-to-print');
+      if (!element) {
+        alert('PDF-Element nicht gefunden.');
+        setIsGenerating(false);
+        return;
+      }
 
-      // Zeitraum bestimmen
+      // Zeitraum bestimmen (nur für Dateinamen / Share-Text)
       let start, end;
       if (filterMode === 'month') {
         start = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
@@ -231,13 +252,15 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
         }
       }
 
-      const fDate = (d) => `${String(d.getDate()).padStart(2, '0')}_${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const fDate = (d) =>
+        `${String(d.getDate()).padStart(2, '0')}_${String(d.getMonth() + 1).padStart(2, '0')}`;
       const fDay = (d) => String(d.getDate()).padStart(2, '0');
 
       const safeName = (employeeName || 'Mitarbeiter').trim().replace(/\s+/g, '_');
       const periodStr = `${fDate(start)}_bis_${fDay(end)}`;
       const filename = `${safeName}_Stundenzettel_${periodStr}.pdf`;
 
+      // html2pdf-Optionen (kein TypeScript, kein ": any")
       const opt = {
         margin: 0,
         filename,
@@ -248,7 +271,7 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
 
       const worker = html2pdf().set(opt).from(element);
 
-      // Web-Fallback
+      // --- Web-Fallback ---
       if (!Capacitor.isNativePlatform()) {
         await worker.save();
         alert('PDF als Browser-Download erstellt.');
@@ -256,18 +279,64 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
         return;
       }
 
-      // Native (Android / iOS): PDF als Blob → Base64 → in Documents
+      // --- Native (Android / iOS) ---
+      // 1. PDF als Blob erzeugen
       const pdfBlob = await worker.output('blob');
       const base64 = await blobToBase64(pdfBlob);
 
-      const result = await Filesystem.writeFile({
-        path: filename,                // direkt im Documents-Ordner
+      // 2. In den öffentlichen Dokumente-Ordner schreiben
+      const directory = Directory.Documents;
+
+      const writeResult = await Filesystem.writeFile({
+        path: filename,
         data: base64,
-        directory: Directory.Documents,
+        directory,
         encoding: Encoding.BASE64
       });
 
-      alert('PDF gespeichert:\n' + result.uri);
+      console.log('PDF gespeichert, writeResult:', writeResult);
+
+      // 3. Share-URI holen (wichtig: gleiches Directory wie oben!)
+      let shareUrl;
+
+      try {
+        const uriResult = await Filesystem.getUri({
+          path: filename,
+          directory
+        });
+
+        console.log('Filesystem.getUri result:', uriResult);
+
+        // Verschiedene Plattformen liefern evtl. uri oder path
+        shareUrl = uriResult.uri || uriResult.path || writeResult.uri || writeResult.path;
+      } catch (uriErr) {
+        console.warn('Fehler bei Filesystem.getUri:', uriErr);
+        shareUrl = writeResult.uri || writeResult.path;
+      }
+
+      if (shareUrl) {
+        try {
+          await Share.share({
+            title: 'Stundenzettel teilen',
+            text: `Stundenzettel ${periodStr}`,
+            url: shareUrl,
+            dialogTitle: 'PDF teilen'
+          });
+        } catch (shareErr) {
+          console.warn('Share-Fehler (PDF):', shareErr);
+          alert(
+            'PDF wurde in den Dokumenten gespeichert, aber Teilen ist fehlgeschlagen.\n\n' +
+              `Dateiname: ${filename}`
+          );
+        }
+      } else {
+        alert(
+          'PDF wurde in den Dokumenten gespeichert,\n' +
+            'aber es konnte keine Share-URL ermittelt werden.\n\n' +
+            `Dateiname: ${filename}\n` +
+            'Du findest die Datei im Ordner "Dokumente".'
+        );
+      }
     } catch (err) {
       console.error('PDF-Fehler', err);
       const msg = typeof err === 'object' ? (err?.message || JSON.stringify(err)) : String(err);
@@ -277,19 +346,23 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
     }
   };
 
+
   return (
-    <div className="fixed inset-0 bg-slate-800 z-50 overflow-y-auto" style={{ paddingTop: 'env(safe-area-inset-top)' }}> 
+    <div
+      className="fixed inset-0 bg-slate-800 z-50 overflow-y-auto"
+      style={{ paddingTop: 'env(safe-area-inset-top)' }}
+    >
       <div className="sticky top-0 bg-slate-900 text-white p-4 flex flex-col md:flex-row gap-4 justify-between items-center shadow-lg z-50">
         <div className="flex items-center gap-4 w-full">
           <button onClick={onClose} className="p-2 hover:bg-slate-700 rounded-full">
-            <X/>
+            <X />
           </button>
           <h2 className="font-bold flex-1 text-center mr-10">Berichtsvorschau</h2>
         </div>
-        
+
         <div className="flex gap-2 items-center flex-wrap justify-center w-full">
-          <select 
-            value={filterMode} 
+          <select
+            value={filterMode}
             onChange={e => setFilterMode(e.target.value)}
             className="bg-slate-800 border border-slate-600 rounded p-2 text-sm flex-1"
           >
@@ -299,19 +372,22 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
             ))}
           </select>
 
-          <button 
-            onClick={handleDownloadPdf} 
+          <button
+            onClick={handleDownloadPdf}
             disabled={isGenerating}
             className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 disabled:opacity-50 text-sm whitespace-nowrap"
           >
-            {isGenerating ? <Loader className="animate-spin" size={16}/> : <Download size={16}/>}
+            {isGenerating ? <Loader className="animate-spin" size={16} /> : <Download size={16} />}
             {isGenerating ? '...' : 'PDF'}
           </button>
         </div>
       </div>
 
       <div className="flex justify-center p-4">
-        <div id="report-to-print" className="bg-white w-[210mm] min-h-[297mm] p-[15mm] shadow-2xl text-black">
+        <div
+          id="report-to-print"
+          className="bg-white w-[210mm] max-w-full min-h-[297mm] mx-auto p-[15mm] shadow-2xl text-black"
+        >
           <div className="border-b-2 border-slate-800 pb-4 mb-6 flex justify-between items-end">
             <div>
               <h1 className="text-2xl font-bold uppercase tracking-wide text-slate-900">Zeiterfassung</h1>
@@ -342,7 +418,7 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
                   <td className="py-2 font-medium align-top">
                     {new Date(entry.date).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })}
                     <span className="text-slate-400 font-normal ml-1">
-                      {new Date(entry.date).toLocaleDateString('de-DE', { weekday: 'short' }).slice(0,2)}
+                      {new Date(entry.date).toLocaleDateString('de-DE', { weekday: 'short' }).slice(0, 2)}
                     </span>
                   </td>
                   <td className="py-2 align-top">
@@ -368,7 +444,7 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
                     {entry.type === 'work' ? (
                       <div>
                         <span className="font-bold text-xs bg-slate-100 px-1 rounded mr-1">
-                           {String(entry.code).padStart(2, '0')}
+                          {String(entry.code).padStart(2, '0')}
                         </span>
                         {entry.project || WORK_CODES.find(c => c.id === entry.code)?.label.split(' - ')[1]}
                       </div>
@@ -421,10 +497,15 @@ export default function App() {
     const saved = localStorage.getItem('kogler_entries');
     return saved ? JSON.parse(saved) : [];
   });
-  
+
   const [userData, setUserData] = useState(() => {
     const saved = localStorage.getItem('kogler_user');
     return saved ? JSON.parse(saved) : { name: "Markus Mustermann" };
+  });
+
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem('kogler_theme');
+    return saved || 'system'; // 'light' | 'dark' | 'system'
   });
 
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -449,8 +530,30 @@ export default function App() {
     };
   }, [view]);
 
+  // Theme anwenden
+  useEffect(() => {
+    try {
+      localStorage.setItem('kogler_theme', theme);
+    } catch (e) {
+      console.warn('Konnte Theme nicht speichern:', e);
+    }
+
+    const prefersDark =
+      window.matchMedia &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+    const isDark = theme === 'dark' || (theme === 'system' && prefersDark);
+
+    const root = document.documentElement;
+    if (isDark) {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+  }, [theme]);
+
   const [formDate, setFormDate] = useState(new Date().toISOString().split('T')[0]);
-  const [entryType, setEntryType] = useState('work'); 
+  const [entryType, setEntryType] = useState('work');
   const [startTime, setStartTime] = useState("06:00");
   const [endTime, setEndTime] = useState("16:30");
   const [project, setProject] = useState("");
@@ -476,6 +579,38 @@ export default function App() {
       })
       .sort((a, b) => new Date(b.date) - new Date(a.date));
   }, [entries, viewYear, viewMonth]);
+
+  // Gruppierung nach KW
+  const groupedByWeek = useMemo(() => {
+    const map = new Map();
+    entriesInMonth.forEach(e => {
+      const d = new Date(e.date);
+      const w = getWeekNumber(d);
+      if (!map.has(w)) map.set(w, []);
+      map.get(w).push(e);
+    });
+
+    const weeks = Array.from(map.entries());
+    // neueste KW zuerst auf der Übersicht
+    weeks.forEach(([w, list]) => {
+      list.sort((a, b) => new Date(b.date) - new Date(a.date));
+    });
+    weeks.sort((a, b) => b[0] - a[0]);
+    return weeks;
+  }, [entriesInMonth]);
+
+  const [expandedWeeks, setExpandedWeeks] = useState({});
+
+  // Neue Wochen standardmäßig expandieren
+  useEffect(() => {
+    setExpandedWeeks(prev => {
+      const next = { ...prev };
+      groupedByWeek.forEach(([week]) => {
+        if (!(week in next)) next[week] = true;
+      });
+      return next;
+    });
+  }, [groupedByWeek]);
 
   const holidays = useMemo(() => getHolidays(viewYear), [viewYear]);
 
@@ -540,7 +675,7 @@ export default function App() {
 
   const saveEntry = (e) => {
     e.preventDefault();
-    
+
     let net = 0;
     let label = "";
 
@@ -610,46 +745,74 @@ export default function App() {
 
   // --- Export / Import ---
 
-  const exportData = async () => {
-    try {
-      const payload = {
-        user: userData,
-        entries,
-        exportedAt: new Date().toISOString(),
-      };
+	const exportData = async () => {
+	  try {
+		const payload = {
+		  user: userData,
+		  entries,
+		  exportedAt: new Date().toISOString()
+		};
 
-      const json = JSON.stringify(payload, null, 2);
-      const fileName = `kogler_zeiterfassung_${new Date().toISOString().slice(0,10)}.json`;
+		const json = JSON.stringify(payload, null, 2);
+		const fileName = `kogler_zeiterfassung_${new Date().toISOString().slice(0, 10)}.json`;
 
-      // Web-Fallback
-      if (!Capacitor.isNativePlatform()) {
-        const blob = new Blob([json], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        alert('Export als Browser-Download erstellt.');
-        return;
-      }
+		// Web-Fallback
+		if (!Capacitor.isNativePlatform()) {
+		  const blob = new Blob([json], { type: 'application/json' });
+		  const url = URL.createObjectURL(blob);
+		  const a = document.createElement('a');
+		  a.href = url;
+		  a.download = fileName;
+		  document.body.appendChild(a);
+		  a.click();
+		  document.body.removeChild(a);
+		  URL.revokeObjectURL(url);
+		  alert('Export als Browser-Download erstellt.');
+		  return;
+		}
 
-      const result = await Filesystem.writeFile({
-        path: fileName,           // direkt im Documents-Ordner
-        data: json,
-        directory: Directory.Documents,
-        encoding: Encoding.UTF8
-      });
+		// Native: in App-Daten schreiben
+		const writeResult = await Filesystem.writeFile({
+		  path: fileName,
+		  data: json,
+		  directory: Directory.Data,
+		  encoding: Encoding.UTF8
+		});
 
-      alert('Export gespeichert:\n' + result.uri);
-    } catch (err) {
-      console.error('Export-Fehler', err);
-      const msg = typeof err === 'object' ? (err?.message || JSON.stringify(err)) : String(err);
-      alert('Fehler beim Export:\n' + msg);
-    }
-  };
+		let shareUrl = writeResult.uri;
+
+		try {
+		  const uriResult = await Filesystem.getUri({
+			path: fileName,
+			directory: Directory.Data
+		  });
+		  if (uriResult && uriResult.uri) {
+			shareUrl = uriResult.uri;
+		  }
+		} catch (uriErr) {
+		  console.warn('Filesystem.getUri (Export) Fehler, verwende file-URI:', uriErr);
+		}
+
+		try {
+		  await Share.share({
+			title: 'Zeiterfassung exportieren',
+			text: 'Exportierte Zeiterfassungsdaten',
+			url: shareUrl
+		  });
+		} catch (shareErr) {
+		  console.warn('Share-Fehler (Export):', shareErr);
+		  // Auch hier kein alert, nur Log
+		}
+
+		alert('Export gespeichert:\n' + writeResult.uri);
+	  } catch (err) {
+		console.error('Export-Fehler', err);
+		const msg =
+		  typeof err === 'object' ? (err?.message || JSON.stringify(err)) : String(err);
+		alert('Fehler beim Export:\n' + msg);
+	  }
+	};
+
 
   const handleImportFile = (event) => {
     const file = event.target.files?.[0];
@@ -701,9 +864,22 @@ export default function App() {
   const overtime = stats.actualMinutes - stats.targetMinutes;
   const progressPercent = Math.min(100, (stats.actualMinutes / (stats.targetMinutes || 1)) * 100);
 
+  const isDark = (() => {
+    if (theme === 'dark') return true;
+    if (theme === 'light') return false;
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      return true;
+    }
+    return false;
+  })();
+
   return (
-    <div className="min-h-screen w-screen bg-slate-50 text-slate-800 font-sans pb-24">
-      
+    <div
+      className={`min-h-screen w-screen font-sans pb-24 ${
+        isDark ? 'bg-slate-900 text-slate-50' : 'bg-slate-50 text-slate-800'
+      }`}
+    >
+
       {/* verstecktes File-Input für Import */}
       <input
         type="file"
@@ -714,7 +890,7 @@ export default function App() {
       />
 
       {/* HEADER */}
-      <header 
+      <header
         className="bg-slate-900 text-white p-4 pb-4 shadow-lg sticky top-0 z-10 w-full"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1rem)' }}
       >
@@ -725,7 +901,7 @@ export default function App() {
                 onClick={() => { setView('dashboard'); setEditingEntry(null); }}
                 className="p-1 hover:bg-slate-700 rounded-full"
               >
-                <ArrowLeft/>
+                <ArrowLeft />
               </button>
             ) : (
               <div className="w-9 h-9 rounded-lg overflow-hidden flex items-center justify-center bg-slate-900">
@@ -741,28 +917,28 @@ export default function App() {
                 {view === 'dashboard'
                   ? 'Übersicht'
                   : view === 'add'
-                  ? (editingEntry ? 'Eintrag bearbeiten' : 'Neuer Eintrag')
-                  : view === 'settings'
-                  ? 'Einstellungen'
-                  : 'Zeiterfassung'}
+                    ? (editingEntry ? 'Eintrag bearbeiten' : 'Neuer Eintrag')
+                    : view === 'settings'
+                      ? 'Einstellungen'
+                      : 'Zeiterfassung'}
               </h1>
               {view === 'dashboard' && <p className="text-xs text-slate-400">Kogler Aufzugsbau</p>}
             </div>
           </div>
-          
+
           {view === 'dashboard' && (
             <div className="flex gap-2">
-              <button 
+              <button
                 onClick={() => setView('settings')}
                 className="p-2 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors"
               >
                 <Settings size={18} className="text-slate-300" />
               </button>
-              <button 
+              <button
                 onClick={() => setView('report')}
                 className="bg-slate-800 hover:bg-slate-700 p-2 rounded-lg transition-colors flex items-center justify-center"
               >
-                 <FileBarChart size={18} className="text-orange-400" />
+                <FileBarChart size={18} className="text-orange-400" />
               </button>
             </div>
           )}
@@ -772,17 +948,17 @@ export default function App() {
       {/* DASHBOARD */}
       {view === 'dashboard' && (
         <main className="w-full p-3 space-y-4">
-           
-           <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl p-2 shadow-sm">
-             <button onClick={() => changeMonth(-1)} className="p-2 hover:bg-slate-100 rounded-lg">
-               <ChevronLeft size={20}/>
-             </button>
-             <span className="font-bold text-slate-700">
-               {currentDate.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' })}
-             </span>
-             <button onClick={() => changeMonth(1)} className="p-2 hover:bg-slate-100 rounded-lg">
-               <ChevronRight size={20}/>
-             </button>
+
+          <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl p-2 shadow-sm">
+            <button onClick={() => changeMonth(-1)} className="p-2 hover:bg-slate-100 rounded-lg">
+              <ChevronLeft size={20} />
+            </button>
+            <span className="font-bold text-slate-700">
+              {currentDate.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' })}
+            </span>
+            <button onClick={() => changeMonth(1)} className="p-2 hover:bg-slate-100 rounded-lg">
+              <ChevronRight size={20} />
+            </button>
           </div>
 
           <Card className="bg-gradient-to-br from-white to-slate-50 border-slate-200">
@@ -813,7 +989,7 @@ export default function App() {
               </div>
 
               <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
-                <div 
+                <div
                   className={`h-2 rounded-full transition-all duration-500 ${overtime >= 0 ? 'bg-green-500' : 'bg-orange-500'}`}
                   style={{ width: `${progressPercent}%` }}
                 ></div>
@@ -822,70 +998,120 @@ export default function App() {
           </Card>
 
           <div className="space-y-3 pb-20">
-             <h3 className="font-bold text-slate-500 text-sm px-1">Letzte Einträge</h3>
-             {entriesInMonth.length === 0 ? (
-                <div className="text-center py-12 text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">
-                  <Calendar size={32} className="mx-auto mb-2 opacity-20" />
-                  <p>Keine Einträge vorhanden.</p>
-                </div>
-              ) : (
-                entriesInMonth.map(entry => (
-                  <div
-                    key={entry.id}
-                    onClick={() => startEdit(entry)}
-                    className="bg-white p-3 rounded-xl shadow-sm border border-slate-200 flex items-center justify-between gap-3 active:scale-[0.99] transition-transform"
-                  >
-                    <div className="flex items-start gap-3 flex-1 min-w-0">
-                      <div
-                        className={`text-white font-bold rounded-lg w-10 h-10 flex flex-col items-center justify-center flex-shrink-0 text-[10px] leading-none
-                          ${entry.type === 'vacation' ? 'bg-blue-400' : entry.type === 'sick' ? 'bg-red-400' : 'bg-slate-800'}`}
-                      >
-                        <span className="text-xs">{new Date(entry.date).getDate()}.</span>
-                        <span className="uppercase opacity-75">
-                          {new Date(entry.date).toLocaleDateString('de-DE', { weekday: 'short' }).slice(0,2)}
+            <h3 className="font-bold text-slate-500 text-sm px-1">Letzte Einträge (nach Kalenderwoche)</h3>
+            {groupedByWeek.length === 0 ? (
+              <div className="text-center py-12 text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">
+                <Calendar size={32} className="mx-auto mb-2 opacity-20" />
+                <p>Keine Einträge vorhanden.</p>
+              </div>
+            ) : (
+              groupedByWeek.map(([week, weekEntries]) => {
+                const totalWeekMinutes = weekEntries.reduce((sum, e) => sum + e.netDuration, 0);
+                const dates = weekEntries.map(e => new Date(e.date));
+                const minDate = new Date(Math.min(...dates.map(d => d.getTime())));
+                const maxDate = new Date(Math.max(...dates.map(d => d.getTime())));
+                const expanded = expandedWeeks[week];
+
+                return (
+                  <div key={week} className="mb-3">
+                    <button
+                      className="w-full flex items-center justify-between bg-slate-100 hover:bg-slate-200 rounded-xl px-3 py-2 transition-colors"
+                      onClick={() =>
+                        setExpandedWeeks(prev => ({ ...prev, [week]: !prev[week] }))
+                      }
+                    >
+                      <div className="flex flex-col items-start text-left">
+                        <span className="text-xs font-bold text-slate-500 uppercase">Kalenderwoche</span>
+                        <span className="font-bold text-slate-800">
+                          KW {week}{' '}
+                          <span className="text-xs text-slate-500 font-normal">
+                            ({minDate.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })} –{' '}
+                            {maxDate.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })})
+                          </span>
                         </span>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-0.5">
-                          <span className="font-bold text-slate-900 truncate text-sm">
-                            {entry.type === 'work'
-                              ? (WORK_CODES.find(c => c.id === Number(entry.code))?.label.split(' - ')[1])
-                              : (entry.type === 'vacation' ? 'Urlaub' : 'Krank')}
-                          </span>
-                        </div>
-                        {entry.project && (
-                          <p className="text-xs text-slate-500 truncate">
-                            {entry.project}
-                          </p>
-                        )}
-                        {entry.type === 'work' && (
-                          <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
-                            <span>{entry.start} - {entry.end}</span>
-                            {entry.pause > 0 && (
-                              <span className="text-orange-500">(-{entry.pause}m)</span>
-                            )}
-                          </div>
-                        )}
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-slate-500 uppercase font-bold">
+                          Woche
+                        </span>
+                        <span className="font-bold text-slate-800 text-sm">
+                          {formatTime(totalWeekMinutes)}
+                        </span>
+                        <ChevronRight
+                          size={18}
+                          className={`text-slate-500 transition-transform ${expanded ? 'rotate-90' : ''}`}
+                        />
                       </div>
-                    </div>
+                    </button>
 
-                    <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                      <div className="font-bold text-slate-700 text-sm">
-                        {formatTime(entry.netDuration)}
+                    {expanded && (
+                      <div className="mt-2 space-y-2">
+                        {weekEntries.map(entry => (
+                          <div
+                            key={entry.id}
+                            onClick={() => startEdit(entry)}
+                            className="bg-white p-3 rounded-xl shadow-sm border border-slate-200 flex items-center justify-between gap-3 active:scale-[0.99] transition-transform"
+                          >
+                            <div className="flex items-start gap-3 flex-1 min-w-0">
+                              <div
+                                className={`text-white font-bold rounded-lg w-10 h-10 flex flex-col items-center justify-center flex-shrink-0 text-[10px] leading-none
+                                  ${entry.type === 'vacation'
+                                    ? 'bg-blue-400'
+                                    : entry.type === 'sick'
+                                      ? 'bg-red-400'
+                                      : 'bg-slate-800'}`}
+                              >
+                                <span className="text-xs">{new Date(entry.date).getDate()}.</span>
+                                <span className="uppercase opacity-75">
+                                  {new Date(entry.date).toLocaleDateString('de-DE', { weekday: 'short' }).slice(0, 2)}
+                                </span>
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-0.5">
+                                  <span className="font-bold text-slate-900 truncate text-sm">
+                                    {entry.type === 'work'
+                                      ? (WORK_CODES.find(c => c.id === Number(entry.code))?.label.split(' - ')[1])
+                                      : (entry.type === 'vacation' ? 'Urlaub' : 'Krank')}
+                                  </span>
+                                </div>
+                                {entry.project && (
+                                  <p className="text-xs text-slate-500 truncate">
+                                    {entry.project}
+                                  </p>
+                                )}
+                                {entry.type === 'work' && (
+                                  <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
+                                    <span>{entry.start} - {entry.end}</span>
+                                    {entry.pause > 0 && (
+                                      <span className="text-orange-500">(-{entry.pause}m)</span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                              <div className="font-bold text-slate-700 text-sm">
+                                {formatTime(entry.netDuration)}
+                              </div>
+                              <button
+                                onClick={(ev) => { ev.stopPropagation(); deleteEntry(entry.id); }}
+                                className="text-slate-300 hover:text-red-500 p-1"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      <button
-                        onClick={(ev) => { ev.stopPropagation(); deleteEntry(entry.id); }}
-                        className="text-slate-300 hover:text-red-500 p-1"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
+                    )}
                   </div>
-                ))
-              )}
+                );
+              })
+            )}
           </div>
-          
-          <button 
+
+          <button
             onClick={startNewEntry}
             className="fixed bottom-6 right-6 bg-slate-900 hover:bg-slate-800 text-white w-14 h-14 rounded-full shadow-xl flex items-center justify-center active:scale-95 transition-all z-20"
           >
@@ -899,7 +1125,7 @@ export default function App() {
         <main className="w-full p-3">
           <Card>
             <form onSubmit={saveEntry} className="p-4 space-y-5">
-              
+
               <div className="bg-slate-100 p-1 rounded-xl flex">
                 <button
                   type="button"
@@ -930,31 +1156,31 @@ export default function App() {
                 </button>
               </div>
 
-               <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500 uppercase">Datum</label>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => changeDate(-1)}
-                      className="p-3 bg-slate-100 rounded-lg text-slate-600"
-                    >
-                      <ChevronLeft size={20} />
-                    </button>
-                    <input
-                      type="date"
-                      required
-                      value={formDate}
-                      onChange={(e) => setFormDate(e.target.value)}
-                      className="flex-1 p-3 bg-white border border-slate-300 rounded-lg text-center font-bold outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => changeDate(1)}
-                      className="p-3 bg-slate-100 rounded-lg text-slate-600"
-                    >
-                      <ChevronRight size={20} />
-                    </button>
-                  </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase">Datum</label>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => changeDate(-1)}
+                    className="p-3 bg-slate-100 rounded-lg text-slate-600"
+                  >
+                    <ChevronLeft size={20} />
+                  </button>
+                  <input
+                    type="date"
+                    required
+                    value={formDate}
+                    onChange={(e) => setFormDate(e.target.value)}
+                    className="flex-1 p-3 bg-white border border-slate-300 rounded-lg text-center font-bold outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => changeDate(1)}
+                    className="p-3 bg-slate-100 rounded-lg text-slate-600"
+                  >
+                    <ChevronRight size={20} />
+                  </button>
+                </div>
               </div>
 
               {entryType === 'work' && (
@@ -1052,30 +1278,30 @@ export default function App() {
                       : 'bg-red-50 border-red-100 text-red-800'
                   }`}
                 >
-                   {entryType === 'vacation' ? <Sun/> : <Thermometer/>}
-                   <div className="text-sm">
-                     <p className="font-bold">Sollzeit wird gutgeschrieben</p>
-                     <p>
+                  {entryType === 'vacation' ? <Sun /> : <Thermometer />}
+                  <div className="text-sm">
+                    <p className="font-bold">Sollzeit wird gutgeschrieben</p>
+                    <p>
                       Für diesen Tag werden automatisch {getDayOfWeek(formDate) === 5 ? '4,5h' : '8,5h'} angerechnet.
-                     </p>
-                   </div>
+                    </p>
+                  </div>
                 </div>
               )}
 
               <div className="pt-2 flex gap-3">
-                 <button
-                   type="button"
-                   onClick={() => { setView('dashboard'); setEditingEntry(null); }}
-                   className="flex-1 py-3 font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 rounded-xl"
-                 >
-                   Abbrechen
-                 </button>
-                 <button
-                   type="submit"
-                   className="flex-[2] py-3 font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl shadow-lg flex items-center justify-center gap-2"
-                 >
-                   <Save size={18}/> Speichern
-                 </button>
+                <button
+                  type="button"
+                  onClick={() => { setView('dashboard'); setEditingEntry(null); }}
+                  className="flex-1 py-3 font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 rounded-xl"
+                >
+                  Abbrechen
+                </button>
+                <button
+                  type="submit"
+                  className="flex-[2] py-3 font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl shadow-lg flex items-center justify-center gap-2"
+                >
+                  <Save size={18} /> Speichern
+                </button>
               </div>
 
             </form>
@@ -1087,32 +1313,76 @@ export default function App() {
       {view === 'settings' && (
         <main className="w-full p-4 space-y-6">
           <Card className="p-5 space-y-4">
-             <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
-               <div className="bg-slate-100 p-3 rounded-full">
-                 <User size={24} className="text-slate-600"/>
-               </div>
-               <div>
-                 <h3 className="font-bold text-lg">Benutzerdaten</h3>
-                 <p className="text-xs text-slate-400">Wird auf dem PDF Bericht angezeigt</p>
-               </div>
-             </div>
-             
-             <div className="space-y-1">
-               <label className="text-xs font-bold text-slate-500 uppercase">Dein Name</label>
-               <input 
-                  type="text" 
-                  value={userData.name} 
-                  onChange={(e) => setUserData({...userData, name: e.target.value})}
-                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-800 outline-none focus:border-orange-500"
-               />
-             </div>
+            <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
+              <div className="bg-slate-100 p-3 rounded-full">
+                <User size={24} className="text-slate-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-lg">Benutzerdaten</h3>
+                <p className="text-xs text-slate-400">Wird auf dem PDF Bericht angezeigt</p>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase">Dein Name</label>
+              <input
+                type="text"
+                value={userData.name}
+                onChange={(e) => setUserData({ ...userData, name: e.target.value })}
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-800 outline-none focus:border-orange-500"
+              />
+            </div>
+          </Card>
+
+          <Card className="p-5 space-y-3">
+            <h3 className="font-bold text-slate-700 flex items-center gap-2">
+              <Sun size={18} className="text-orange-400" />
+              <span>Design / Theme</span>
+            </h3>
+            <p className="text-sm text-slate-500">
+              Wähle, ob die App hell, dunkel oder automatisch nach System-Einstellung aussehen soll.
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                onClick={() => setTheme('light')}
+                className={`py-2 px-2 rounded-xl text-sm font-bold border ${
+                  theme === 'light'
+                    ? 'border-orange-500 bg-orange-50 text-orange-700'
+                    : 'border-slate-200 bg-slate-50 text-slate-600'
+                }`}
+              >
+                Hell
+              </button>
+              <button
+                onClick={() => setTheme('dark')}
+                className={`py-2 px-2 rounded-xl text-sm font-bold border flex items-center justify-center gap-1 ${
+                  theme === 'dark'
+                    ? 'border-slate-700 bg-slate-900 text-slate-50'
+                    : 'border-slate-200 bg-slate-50 text-slate-600'
+                }`}
+              >
+                <Moon size={14} />
+                Dunkel
+              </button>
+              <button
+                onClick={() => setTheme('system')}
+                className={`py-2 px-2 rounded-xl text-sm font-bold border ${
+                  theme === 'system'
+                    ? 'border-slate-800 bg-slate-200 text-slate-900'
+                    : 'border-slate-200 bg-slate-50 text-slate-600'
+                }`}
+              >
+                System
+              </button>
+            </div>
           </Card>
 
           <Card className="p-5 space-y-3">
             <h3 className="font-bold text-slate-700">Daten sichern & wiederherstellen</h3>
             <p className="text-sm text-slate-500">
-              Exportiert alle Einträge und Einstellungen als JSON-Datei in deinen Dokumente-Ordner
-              (oder Browser-Download). Über „Importieren“ kannst du eine zuvor exportierte Datei wieder einlesen.
+              Exportiert alle Einträge und Einstellungen als JSON-Datei in einen App-internen Ordner.
+              Über „Importieren“ kannst du eine zuvor exportierte Datei wieder einlesen.
+              Auf dem Handy kannst du den Speicherort beim Teilen selbst wählen (z.&nbsp;B. Google Drive, Mail, Dateien).
             </p>
             <div className="flex flex-col gap-2">
               <button
@@ -1142,9 +1412,9 @@ export default function App() {
               Alle Daten löschen
             </button>
           </Card>
-          
+
           <p className="text-center text-xs text-slate-300">
-            App Version 1.7 (Logo, PDF & Export-Fix)
+            App Version 1.8.3 (PDF-Share-Fix)
           </p>
         </main>
       )}
