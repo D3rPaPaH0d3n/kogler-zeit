@@ -54,7 +54,8 @@ const WORK_CODES = [
   { id: 22, label: "22 - Umbau, Sanierungen" },
   { id: 23, label: "23 - TÜV-Mängel" },
   { id: 24, label: "24 - Demontage" },
-  { id: 25, label: "25 - Gerüstbau" }
+  { id: 25, label: "25 - Gerüstbau" },
+  { id: 70, label: "70 - Büro" } // neu
 ];
 
 // Österreichische Feiertage (Fixe + Bewegliche)
@@ -185,7 +186,6 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
   const [filterMode, setFilterMode] = useState('month');
   const [isGenerating, setIsGenerating] = useState(false);
 
-  // sortiert nach Datum (alt → neu) + Startzeit
   const filteredEntries = useMemo(() => {
     let list =
       filterMode === 'month'
@@ -233,7 +233,6 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
         return;
       }
 
-      // Zeitraum bestimmen (nur für Dateinamen / Share-Text)
       let start, end;
       if (filterMode === 'month') {
         start = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
@@ -260,7 +259,6 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
       const periodStr = `${fDate(start)}_bis_${fDay(end)}`;
       const filename = `${safeName}_Stundenzettel_${periodStr}.pdf`;
 
-      // html2pdf-Optionen
       const opt = {
         margin: 0,
         filename,
@@ -271,7 +269,6 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
 
       const worker = html2pdf().set(opt).from(element);
 
-      // --- Web-Fallback ---
       if (!Capacitor.isNativePlatform()) {
         await worker.save();
         alert('PDF als Browser-Download erstellt.');
@@ -279,12 +276,9 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
         return;
       }
 
-      // --- Native (Android / iOS) ---
-      // 1. PDF als Blob erzeugen
       const pdfBlob = await worker.output('blob');
       const base64 = await blobToBase64(pdfBlob);
 
-      // 2. In den App-internen Daten-Ordner schreiben
       const directory = Directory.Data;
 
       const writeResult = await Filesystem.writeFile({
@@ -296,7 +290,6 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
 
       console.log('PDF gespeichert, writeResult:', writeResult);
 
-      // 3. Share-URI holen
       let shareUrl;
 
       try {
@@ -501,16 +494,23 @@ export default function App() {
     return saved ? JSON.parse(saved) : { name: "Markus Mustermann" };
   });
 
-  const [theme, setTheme] = useState(() => {
-    const saved = localStorage.getItem('kogler_theme');
-    return saved || 'system'; // 'light' | 'dark' | 'system'
-  });
+  // Theme: Dark-Logic bleibt, aber aktuell immer "light"
+  const [theme, setTheme] = useState(() => 'light');
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [view, setView] = useState('dashboard');
   const [editingEntry, setEditingEntry] = useState(null);
 
   const fileInputRef = useRef(null);
+
+  // Month-Picker
+  const [showMonthPicker, setShowMonthPicker] = useState(false);
+  const [monthPickerValue, setMonthPickerValue] = useState(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth() + 1;
+    return `${y.toString().padStart(4, '0')}-${m.toString().padStart(2, '0')}`;
+  });
 
   // BACK BUTTON
   useEffect(() => {
@@ -528,7 +528,7 @@ export default function App() {
     };
   }, [view]);
 
-  // Theme anwenden
+  // Theme anwenden – wird immer als "light" gespeichert/gesetzt
   useEffect(() => {
     try {
       localStorage.setItem('kogler_theme', theme);
@@ -540,10 +540,10 @@ export default function App() {
       window.matchMedia &&
       window.matchMedia('(prefers-color-scheme: dark)').matches;
 
-    const isDark = theme === 'dark' || (theme === 'system' && prefersDark);
+    const isDarkMode = theme === 'dark' || (theme === 'system' && prefersDark);
 
     const root = document.documentElement;
-    if (isDark) {
+    if (isDarkMode) {
       root.classList.add('dark');
     } else {
       root.classList.remove('dark');
@@ -589,7 +589,6 @@ export default function App() {
     });
 
     const weeks = Array.from(map.entries());
-    // neueste KW zuerst auf der Übersicht
     weeks.forEach(([w, list]) => {
       list.sort((a, b) => new Date(b.date) - new Date(a.date));
     });
@@ -597,18 +596,8 @@ export default function App() {
     return weeks;
   }, [entriesInMonth]);
 
+  // KW-Expansion (standardmäßig eingeklappt)
   const [expandedWeeks, setExpandedWeeks] = useState({});
-
-  // Neue Wochen standardmäßig expandieren
-  useEffect(() => {
-    setExpandedWeeks(prev => {
-      const next = { ...prev };
-      groupedByWeek.forEach(([week]) => {
-        if (!(week in next)) next[week] = true;
-      });
-      return next;
-    });
-  }, [groupedByWeek]);
 
   const holidays = useMemo(() => getHolidays(viewYear), [viewYear]);
 
@@ -734,6 +723,30 @@ export default function App() {
     setCurrentDate(newDate);
   };
 
+  const openMonthPicker = () => {
+    const y = currentDate.getFullYear();
+    const m = currentDate.getMonth() + 1;
+    setMonthPickerValue(`${y.toString().padStart(4, '0')}-${m.toString().padStart(2, '0')}`);
+    setShowMonthPicker(true);
+  };
+
+  const applyMonthPicker = () => {
+    if (!monthPickerValue) {
+      setShowMonthPicker(false);
+      return;
+    }
+    const [yearStr, monthStr] = monthPickerValue.split('-');
+    const y = Number(yearStr) || new Date().getFullYear();
+    const m = Number(monthStr) || 1;
+
+    const newDate = new Date(currentDate);
+    newDate.setFullYear(y);
+    newDate.setMonth(m - 1);
+    newDate.setDate(1);
+    setCurrentDate(newDate);
+    setShowMonthPicker(false);
+  };
+
   const clearAllData = () => {
     if (confirm("ACHTUNG: Wirklich ALLE Einträge löschen? Das kann nicht rückgängig gemacht werden!")) {
       setEntries([]);
@@ -754,7 +767,6 @@ export default function App() {
       const json = JSON.stringify(payload, null, 2);
       const fileName = `kogler_zeiterfassung_${new Date().toISOString().slice(0, 10)}.json`;
 
-      // Web-Fallback
       if (!Capacitor.isNativePlatform()) {
         const blob = new Blob([json], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
@@ -769,7 +781,6 @@ export default function App() {
         return;
       }
 
-      // Native: in App-Daten schreiben
       const writeResult = await Filesystem.writeFile({
         path: fileName,
         data: json,
@@ -860,14 +871,16 @@ export default function App() {
   const overtime = stats.actualMinutes - stats.targetMinutes;
   const progressPercent = Math.min(100, (stats.actualMinutes / (stats.targetMinutes || 1)) * 100);
 
-  const isDark = (() => {
-    if (theme === 'dark') return true;
-    if (theme === 'light') return false;
-    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      return true;
-    }
-    return false;
-  })();
+  // isDark ist technisch noch da, aber aktuell immer false (weil theme='light')
+  const isDark = false;
+
+  const inputBaseClasses = "w-full p-3 rounded-lg outline-none border";
+  const darkInputClasses = isDark
+    ? "bg-slate-800 border-slate-600 text-slate-50"
+    : "bg-white border-slate-300 text-slate-800";
+
+  const subtleBtnHover = (lightClass, _darkClass) =>
+    lightClass;
 
   return (
     <div
@@ -945,14 +958,33 @@ export default function App() {
       {view === 'dashboard' && (
         <main className="w-full p-3 space-y-4">
 
-          <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl p-2 shadow-sm">
-            <button onClick={() => changeMonth(-1)} className="p-2 hover:bg-slate-100 rounded-lg">
+          {/* Monat / Navigation */}
+          <div
+            className={`flex items-center justify-between rounded-xl p-2 shadow-sm border ${
+              isDark
+                ? 'bg-slate-800 border-slate-700 text-slate-50'
+                : 'bg-white border-slate-200 text-slate-700'
+            }`}
+          >
+            <button
+              onClick={() => changeMonth(-1)}
+              className={`p-2 rounded-lg ${subtleBtnHover('hover:bg-slate-100', 'hover:bg-slate-700')}`}
+            >
               <ChevronLeft size={20} />
             </button>
-            <span className="font-bold text-slate-700">
+
+            <button
+              type="button"
+              onClick={openMonthPicker}
+              className="font-bold px-3 py-1 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400"
+            >
               {currentDate.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' })}
-            </span>
-            <button onClick={() => changeMonth(1)} className="p-2 hover:bg-slate-100 rounded-lg">
+            </button>
+
+            <button
+              onClick={() => changeMonth(1)}
+              className={`p-2 rounded-lg ${subtleBtnHover('hover:bg-slate-100', 'hover:bg-slate-700')}`}
+            >
               <ChevronRight size={20} />
             </button>
           </div>
@@ -996,7 +1028,9 @@ export default function App() {
           <div className="space-y-3 pb-20">
             <h3 className="font-bold text-slate-500 text-sm px-1">Letzte Einträge (nach Kalenderwoche)</h3>
             {groupedByWeek.length === 0 ? (
-              <div className="text-center py-12 text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">
+              <div className={`text-center py-12 rounded-xl border border-dashed ${
+                isDark ? 'bg-slate-800 border-slate-600 text-slate-400' : 'bg-white border-slate-300 text-slate-400'
+              }`}>
                 <Calendar size={32} className="mx-auto mb-2 opacity-20" />
                 <p>Keine Einträge vorhanden.</p>
               </div>
@@ -1006,12 +1040,14 @@ export default function App() {
                 const dates = weekEntries.map(e => new Date(e.date));
                 const minDate = new Date(Math.min(...dates.map(d => d.getTime())));
                 const maxDate = new Date(Math.max(...dates.map(d => d.getTime())));
-                const expanded = expandedWeeks[week];
+                const expanded = !!expandedWeeks[week];
 
                 return (
                   <div key={week} className="mb-3">
                     <button
-                      className="w-full flex items-center justify-between bg-slate-100 hover:bg-slate-200 rounded-xl px-3 py-2 transition-colors"
+                      className={`w-full flex items-center justify-between rounded-xl px-3 py-2 transition-colors ${
+                        isDark ? 'bg-slate-800 hover:bg-slate-700' : 'bg-slate-100 hover:bg-slate-200'
+                      }`}
                       onClick={() =>
                         setExpandedWeeks(prev => ({ ...prev, [week]: !prev[week] }))
                       }
@@ -1046,7 +1082,9 @@ export default function App() {
                           <div
                             key={entry.id}
                             onClick={() => startEdit(entry)}
-                            className="bg-white p-3 rounded-xl shadow-sm border border-slate-200 flex items-center justify-between gap-3 active:scale-[0.99] transition-transform"
+                            className={`p-3 rounded-xl shadow-sm border flex items-center justify-between gap-3 active:scale-[0.99] transition-transform ${
+                              isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'
+                            }`}
                           >
                             <div className="flex items-start gap-3 flex-1 min-w-0">
                               <div
@@ -1122,12 +1160,12 @@ export default function App() {
           <Card>
             <form onSubmit={saveEntry} className="p-4 space-y-5">
 
-              <div className="bg-slate-100 p-1 rounded-xl flex">
+              <div className={`bg-slate-100 p-1 rounded-xl flex`}>
                 <button
                   type="button"
                   onClick={() => setEntryType('work')}
                   className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${
-                    entryType === 'work' ? 'bg-white shadow text-slate-900' : 'text-slate-500'
+                    entryType === 'work' ? 'bg-white text-slate-900 shadow' : 'text-slate-500'
                   }`}
                 >
                   Arbeit
@@ -1136,7 +1174,9 @@ export default function App() {
                   type="button"
                   onClick={() => setEntryType('vacation')}
                   className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${
-                    entryType === 'vacation' ? 'bg-blue-100 text-blue-700 shadow-sm' : 'text-slate-500'
+                    entryType === 'vacation'
+                      ? 'bg-blue-100 text-blue-700 shadow-sm'
+                      : 'text-slate-500'
                   }`}
                 >
                   Urlaub
@@ -1145,7 +1185,9 @@ export default function App() {
                   type="button"
                   onClick={() => setEntryType('sick')}
                   className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${
-                    entryType === 'sick' ? 'bg-red-100 text-red-700 shadow-sm' : 'text-slate-500'
+                    entryType === 'sick'
+                      ? 'bg-red-100 text-red-700 shadow-sm'
+                      : 'text-slate-500'
                   }`}
                 >
                   Krank
@@ -1158,7 +1200,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => changeDate(-1)}
-                    className="p-3 bg-slate-100 rounded-lg text-slate-600"
+                    className={`p-3 rounded-lg text-slate-600 ${subtleBtnHover('bg-slate-100', 'bg-slate-800')}`}
                   >
                     <ChevronLeft size={20} />
                   </button>
@@ -1167,12 +1209,12 @@ export default function App() {
                     required
                     value={formDate}
                     onChange={(e) => setFormDate(e.target.value)}
-                    className="flex-1 p-3 bg-white border border-slate-300 rounded-lg text-center font-bold outline-none"
+                    className={`flex-1 p-3 rounded-lg text-center font-bold outline-none border bg-white border-slate-300 text-slate-900`}
                   />
                   <button
                     type="button"
                     onClick={() => changeDate(1)}
-                    className="p-3 bg-slate-100 rounded-lg text-slate-600"
+                    className={`p-3 rounded-lg text-slate-600 ${subtleBtnHover('bg-slate-100', 'bg-slate-800')}`}
                   >
                     <ChevronRight size={20} />
                   </button>
@@ -1188,7 +1230,7 @@ export default function App() {
                         required
                         value={startTime}
                         onChange={(e) => setStartTime(e.target.value)}
-                        className="w-full p-3 bg-white border border-slate-300 rounded-lg outline-none appearance-none font-medium"
+                        className={`${inputBaseClasses} ${darkInputClasses} appearance-none font-medium`}
                       >
                         {TIME_OPTIONS.map(t => (
                           <option key={`s-${t}`} value={t}>{t}</option>
@@ -1201,7 +1243,7 @@ export default function App() {
                         required
                         value={endTime}
                         onChange={(e) => setEndTime(e.target.value)}
-                        className="w-full p-3 bg-white border border-slate-300 rounded-lg outline-none appearance-none font-medium"
+                        className={`${inputBaseClasses} ${darkInputClasses} appearance-none font-medium`}
                       >
                         {TIME_OPTIONS.map(t => (
                           <option key={`e-${t}`} value={t}>{t}</option>
@@ -1243,7 +1285,7 @@ export default function App() {
                     <select
                       value={code}
                       onChange={(e) => setCode(Number(e.target.value))}
-                      className="w-full p-3 bg-white border border-slate-300 rounded-lg outline-none font-medium"
+                      className={`${inputBaseClasses} ${darkInputClasses} font-medium`}
                     >
                       {WORK_CODES.map(c => (
                         <option key={c.id} value={c.id}>
@@ -1260,7 +1302,7 @@ export default function App() {
                       placeholder="..."
                       value={project}
                       onChange={(e) => setProject(e.target.value)}
-                      className="w-full p-3 bg-white border border-slate-300 rounded-lg outline-none"
+                      className={`${inputBaseClasses} ${darkInputClasses}`}
                     />
                   </div>
                 </>
@@ -1325,7 +1367,7 @@ export default function App() {
                 type="text"
                 value={userData.name}
                 onChange={(e) => setUserData({ ...userData, name: e.target.value })}
-                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-800 outline-none focus:border-orange-500"
+                className={`w-full p-3 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-800 outline-none focus:border-orange-500`}
               />
             </div>
           </Card>
@@ -1336,7 +1378,7 @@ export default function App() {
               <span>Design / Theme</span>
             </h3>
             <p className="text-sm text-slate-500">
-              Wähle, ob die App hell, dunkel oder automatisch nach System-Einstellung aussehen soll.
+              Aktuell ist nur das helle Design aktiv. Dunkel & System sind deaktiviert.
             </p>
             <div className="grid grid-cols-3 gap-2">
               <button
@@ -1350,23 +1392,15 @@ export default function App() {
                 Hell
               </button>
               <button
-                onClick={() => setTheme('dark')}
-                className={`py-2 px-2 rounded-xl text-sm font-bold border flex items-center justify-center gap-1 ${
-                  theme === 'dark'
-                    ? 'border-slate-700 bg-slate-900 text-slate-50'
-                    : 'border-slate-200 bg-slate-50 text-slate-600'
-                }`}
+                disabled
+                className="py-2 px-2 rounded-xl text-sm font-bold border border-slate-200 bg-slate-50 text-slate-400 opacity-60 cursor-not-allowed flex items-center justify-center gap-1"
               >
                 <Moon size={14} />
                 Dunkel
               </button>
               <button
-                onClick={() => setTheme('system')}
-                className={`py-2 px-2 rounded-xl text-sm font-bold border ${
-                  theme === 'system'
-                    ? 'border-slate-800 bg-slate-200 text-slate-900'
-                    : 'border-slate-200 bg-slate-50 text-slate-600'
-                }`}
+                disabled
+                className="py-2 px-2 rounded-xl text-sm font-bold border border-slate-200 bg-slate-50 text-slate-400 opacity-60 cursor-not-allowed"
               >
                 System
               </button>
@@ -1410,9 +1444,48 @@ export default function App() {
           </Card>
 
           <p className="text-center text-xs text-slate-300">
-            App Version 1.8.4 (PDF in App-Daten & Share)
+            App Version 1.8.6 (Theme-Auswahl eingeschränkt, basiert auf 1.8.5)
           </p>
         </main>
+      )}
+
+      {/* Monat/Jahr Picker Modal */}
+      {showMonthPicker && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50">
+          <div
+            className={`w-11/12 max-w-sm rounded-2xl p-4 ${
+              isDark ? 'bg-slate-900 text-slate-50' : 'bg-white text-slate-800'
+            }`}
+          >
+            <h2 className="font-bold mb-2 text-center">Monat & Jahr wählen</h2>
+            <input
+              type="month"
+              value={monthPickerValue}
+              onChange={(e) => setMonthPickerValue(e.target.value)}
+              className={`w-full p-3 rounded-xl border mb-4 text-center font-mono ${
+                isDark ? 'bg-slate-800 border-slate-700 text-slate-50' : 'bg-slate-50 border-slate-300 text-slate-800'
+              }`}
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setShowMonthPicker(false)}
+                className={`flex-1 py-2 rounded-xl font-bold ${
+                  isDark ? 'bg-slate-800 text-slate-200' : 'bg-slate-100 text-slate-700'
+                }`}
+              >
+                Abbrechen
+              </button>
+              <button
+                type="button"
+                onClick={applyMonthPicker}
+                className="flex-1 py-2 rounded-xl font-bold bg-orange-500 text-white hover:bg-orange-600"
+              >
+                Übernehmen
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>
