@@ -1132,6 +1132,20 @@ const diff = workMinutes - targetKW;
 
                 const expanded = expandedWeeks[week];
 
+            const sortedWeekEntries = [...weekEntries].sort((a, b) => {
+              const da = new Date(a.date);
+              const db = new Date(b.date);
+
+              // 1. Nach Datum: neuere Tage zuerst (wie bisher)
+              if (da.getTime() !== db.getTime()) {
+                return db - da;
+              }
+
+              // 2. Innerhalb eines Tages nach Startzeit: früh → spät
+              const sa = a.start || '23:59';
+              const sb = b.start || '23:59';
+              return sa.localeCompare(sb);
+            });
 
                 return (
                   <div key={week} className="mb-3">
