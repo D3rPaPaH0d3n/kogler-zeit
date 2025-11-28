@@ -6,6 +6,7 @@
 
 
 
+
 Die digitale Lösung für unsere Stundenzettel bei Kogler Aufzugsbau.
 Schluss mit Papierchaos und Rechenfehlern – diese App erledigt den Papierkram für dich.
 
