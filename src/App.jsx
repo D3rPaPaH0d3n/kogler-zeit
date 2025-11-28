@@ -393,7 +393,7 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
   }, [filteredEntries]);
 
   // ---------------------------------------------
-  //  PDF GENERIERUNG
+  //  PDF GENERIERUNG (Safe Mode & Unique Names)
   // ---------------------------------------------
   const handleDownloadPdf = async () => {
     try {
@@ -405,6 +405,7 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
         return;
       }
 
+      // Zeitraum ermitteln
       let start, end;
       if (filterMode === "month") {
         start = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
@@ -422,6 +423,8 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
           end = new Date();
         }
       }
+
+      // Dateinamen generieren (jetzt mit Timestamp um Konflikte zu vermeiden!)
       const f2 = (d) => String(d.getDate()).padStart(2, "0");
       const fDate = (d) =>
         `${f2(d)}_${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -429,7 +432,10 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
       const safeName = (employeeName || "Mitarbeiter")
         .trim()
         .replace(/\s+/g, "_");
-      const filename = `${safeName}_Stundenzettel_${periodStr}.pdf`;
+
+      // Timestamp hinzufügen (z.B. _102345), damit der Name immer neu ist
+      const timestamp = new Date().getTime().toString().slice(-6);
+      const filename = `${safeName}_Stundenzettel_${periodStr}_${timestamp}.pdf`;
 
       const opt = {
         margin: 0,
@@ -439,6 +445,7 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
         jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
       };
 
+      // 1. PDF Buffer erzeugen
       const worker = html2pdf().set(opt).from(element);
 
       if (!Capacitor.isNativePlatform()) {
@@ -450,22 +457,35 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
 
       const pdfBlob = await worker.output("blob");
       const base64 = await blobToBase64(pdfBlob);
-      await Filesystem.writeFile({
-        path: filename,
-        data: base64,
-        directory: Directory.Data,
-        encoding: Encoding.BASE64,
-      });
 
+      // 2. Schreiben versuchen
+      try {
+        const result = await Filesystem.writeFile({
+          path: filename,
+          data: base64,
+          directory: Directory.Documents,
+          encoding: Encoding.BASE64,
+          recursive: true, // Hilft manchmal auf Android
+        });
+
+        console.log("PDF gespeichert unter:", result.uri);
+      } catch (writeError) {
+        // Falls schreiben fehlschlägt, zeigen wir den genauen Fehler
+        alert("Fehler beim Speichern: " + writeError.message);
+        setIsGenerating(false);
+        return;
+      }
+
+      // 3. Teilen versuchen
       let shareUrl;
       try {
         const uriResult = await Filesystem.getUri({
           path: filename,
-          directory: Directory.Data,
+          directory: Directory.Documents,
         });
         shareUrl = uriResult.uri || uriResult.path;
-      } catch (err) {
-        shareUrl = null;
+      } catch (uriError) {
+        console.error("URI Fehler:", uriError);
       }
 
       if (shareUrl) {
@@ -475,11 +495,11 @@ const PrintReport = ({ entries, monthDate, employeeName, onClose }) => {
           url: shareUrl,
         });
       } else {
-        alert("PDF gespeichert.");
+        alert("PDF gespeichert in Dokumente (Teilen nicht möglich).");
       }
     } catch (err) {
       console.error(err);
-      alert("Fehler beim Erstellen der PDF.");
+      alert("Genereller Fehler: " + err.message);
     } finally {
       setIsGenerating(false);
     }
@@ -805,6 +825,74 @@ export default function App() {
   }, [theme]);
 
   const isDark = false; // DarkMode deaktiviert
+
+  // ... bestehende States ...
+
+  // -------------------------------------------------
+  //  AUTO-BACKUP STATE
+  // -------------------------------------------------
+  const [autoBackup, setAutoBackup] = useState(() => {
+    const saved = localStorage.getItem("kogler_auto_backup");
+    return saved === "true"; // Standard ist false, wenn noch nie gesetzt
+  });
+
+  // Speichern der Einstellung
+  useEffect(() => {
+    localStorage.setItem("kogler_auto_backup", autoBackup);
+  }, [autoBackup]);
+
+  // -------------------------------------------------
+  //  AUTO-BACKUP LOGIK (Einmal täglich)
+  // -------------------------------------------------
+  useEffect(() => {
+    const performAutoBackup = async () => {
+      // 1. Abbruchbedingungen
+      if (!autoBackup) return; // Feature deaktiviert
+      if (!Capacitor.isNativePlatform()) return; // Im Browser macht Auto-Save ins Dateisystem wenig Sinn/Probleme
+      if (entries.length === 0) return; // Nichts zu sichern
+
+      const today = new Date().toISOString().split("T")[0];
+      const lastBackupDate = localStorage.getItem("kogler_last_backup_date");
+
+      // 2. Prüfen: Wurde heute schon gesichert?
+      if (lastBackupDate === today) {
+        return;
+      }
+
+      // 3. Backup durchführen
+      try {
+        const payload = {
+          user: userData,
+          entries,
+          exportedAt: new Date().toISOString(),
+          note: "Automatische Sicherung",
+        };
+
+        const json = JSON.stringify(payload, null, 2);
+        const fileName = `kogler_autobackup_${today}.json`;
+
+        await Filesystem.writeFile({
+          path: fileName,
+          data: json,
+          directory: Directory.Documents,
+          encoding: Encoding.UTF8,
+        });
+
+        // 4. Merken, dass wir heute fertig sind
+        localStorage.setItem("kogler_last_backup_date", today);
+        console.log("Auto-Backup erfolgreich erstellt:", fileName);
+      } catch (err) {
+        console.error("Fehler beim Auto-Backup:", err);
+      }
+    };
+
+    // Wir geben dem System kurz Zeit, bevor wir prüfen (Debounce nicht zwingend, aber gut bei App Start)
+    const timer = setTimeout(() => {
+      performAutoBackup();
+    }, 2000);
+
+    return () => clearTimeout(timer);
+  }, [entries, userData, autoBackup]);
 
   // -------------------------------------------------
   //  FORM STATES
@@ -1155,7 +1243,7 @@ export default function App() {
       const writeResult = await Filesystem.writeFile({
         path: fileName,
         data: json,
-        directory: Directory.Data,
+        directory: Directory.Documents,
         encoding: Encoding.UTF8,
       });
 
@@ -1163,7 +1251,7 @@ export default function App() {
       try {
         const uri = await Filesystem.getUri({
           path: fileName,
-          directory: Directory.Data,
+          directory: Directory.Documents,
         });
         if (uri?.uri) shareUrl = uri.uri;
       } catch (err) {}
@@ -2060,13 +2148,42 @@ export default function App() {
             </div>
           </Card>
 
-          {/* EXPORT / IMPORT */}
+          {/* EXPORT / IMPORT & AUTO-BACKUP */}
           <Card className="p-5 space-y-3">
-            <h3 className="font-bold text-slate-700">
-              Daten sichern & wiederherstellen
-            </h3>
+            <h3 className="font-bold text-slate-700">Daten & Backup</h3>
+
+            {/* NEU: AUTO BACKUP SCHALTER */}
+            <div className="flex items-center justify-between bg-slate-100 p-3 rounded-xl mb-2">
+              <div>
+                <span className="block font-bold text-sm text-slate-800">
+                  Automatisches Backup
+                </span>
+                <span className="block text-xs text-slate-500">
+                  Speichert 1x täglich lokal.
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  if (!autoBackup) {
+                    // Datum zurücksetzen, damit beim Einschalten sofort gesichert wird
+                    localStorage.removeItem("kogler_last_backup_date");
+                  }
+                  setAutoBackup(!autoBackup);
+                }}
+                className={`w-12 h-7 rounded-full transition-colors flex items-center px-1 ${
+                  autoBackup ? "bg-green-500" : "bg-slate-300"
+                }`}
+              >
+                <div
+                  className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform ${
+                    autoBackup ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
             <p className="text-sm text-slate-500">
-              Exportiert alle Einträge in eine Datei.
+              Manueller Export aller Einträge in eine Datei.
             </p>
 
             <div className="flex flex-col gap-2">
@@ -2106,7 +2223,7 @@ export default function App() {
           </Card>
 
           <p className="text-center text-xs text-slate-300">
-            App Version 2.0.0
+            App Version 2.0.1
           </p>
         </main>
       )}
