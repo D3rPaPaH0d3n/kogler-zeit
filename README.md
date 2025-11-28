@@ -1,6 +1,6 @@
 # Kogler Zeiterfassung
 
-[![Version](https://img.shields.io/github/v/release/D3rPaPaH0d3n/kogler-zeit?include_prereleases&color=orange&label=Version)](https://github.com/D3rPaPaH0d3n/kogler-zeit/releases) ![Downloads](https://img.shields.io/github/downloads/D3rPaPaH0d3n/kogler-zeit/total?color=blue&label=Downloads)![Downloads](https://img.shields.io/github/downloads/D3rPaPaH0d3n/kogler-zeit/latest/total?color=blue&label=Downloads)
+[![Version](https://img.shields.io/github/v/release/D3rPaPaH0d3n/kogler-zeit?include_prereleases&color=orange&label=Version)](https://github.com/D3rPaPaH0d3n/kogler-zeit/releases) ![Downloads](https://img.shields.io/github/downloads/D3rPaPaH0d3n/kogler-zeit/total?color=blue&label=Downloads)
 
 
 
